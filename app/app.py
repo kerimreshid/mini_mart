@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, status,Query
 from contextlib import asynccontextmanager
 from sqlalchemy.orm import Session
 from app import schema
-from app.schema import ProductCreate,ProductResponse,ProductUpdate,StockRestock,StockCorrection
+from app.schema import ProductCreate,ProductResponse,ProductUpdate,StockRestock,StockCorrection,StockMovementResponse
 
 from typing import Literal
 from fastapi import UploadFile, File
@@ -11,7 +11,7 @@ from app.imagekit_client import imagekit
 from app.database import Base, engine, get_db
 from app import models
 
-
+StockMovementResponse
 
 
 @asynccontextmanager
@@ -103,6 +103,37 @@ def get_products(
     products = query.offset(skip).limit(limit).all()
 
     return products
+
+# GET PRODUCT MOVEMENTS
+
+@app.get(
+    "/products/{product_id}/movements",
+    response_model=list[StockMovementResponse]
+)
+def get_product_movements(
+    product_id: int,
+    db: Session = Depends(get_db)
+):
+    product = db.query(models.Product).filter(
+        models.Product.id == product_id
+    ).first()
+
+    if product is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Product not found"
+        )
+
+    movements = db.query(
+        models.InventoryMovement
+    ).filter(
+        models.InventoryMovement.product_id == product_id
+    ).order_by(
+        models.InventoryMovement.created_at.desc(),
+        models.InventoryMovement.id.desc()
+    ).all()
+
+    return movements
 
 
 
@@ -250,7 +281,6 @@ def create_products_bulk(
 
 
 
-
 @app.post(
     "/products/{product_id}/restock",
     response_model=ProductResponse
@@ -270,13 +300,34 @@ def restock_product(
             detail="Product not found"
         )
 
-    product.stock_quantity += stock_data.quantity
+    previous_quantity = product.stock_quantity
 
-    db.commit()
-    db.refresh(product)
+    new_quantity = previous_quantity + stock_data.quantity
+
+    try:
+        product.stock_quantity = new_quantity
+
+        movement = models.InventoryMovement(
+            product_id=product.id,
+            movement_type="restock",
+            quantity_change=stock_data.quantity,
+            previous_quantity=previous_quantity,
+            new_quantity=new_quantity,
+            reason="Supplier delivery"
+        )
+
+        db.add(movement)
+        db.commit()
+        db.refresh(product)
+
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Could not complete stock restocking"
+        )
 
     return product
-
 
 # the lesson you are giving me less and when i chat repetdly its quickly finished so i want 3 times of  lessons that you are giving me right now and we can track  easily
 
@@ -356,7 +407,6 @@ def patch_product(
     return product
 
 
-
 @app.patch(
     "/products/{product_id}/stock",
     response_model=ProductResponse
@@ -376,13 +426,42 @@ def correct_product_stock(
             detail="Product not found"
         )
 
-    product.stock_quantity = stock_data.actual_quantity
+    previous_quantity = product.stock_quantity
 
-    db.commit()
-    db.refresh(product)
+    new_quantity = stock_data.actual_quantity
+
+    if previous_quantity == new_quantity:
+        raise HTTPException(
+            status_code=400,
+            detail="Stock quantity is already correct"
+        )
+
+    quantity_change = new_quantity - previous_quantity
+
+    try:
+        product.stock_quantity = new_quantity
+
+        movement = models.InventoryMovement(
+            product_id=product.id,
+            movement_type="correction",
+            quantity_change=quantity_change,
+            previous_quantity=previous_quantity,
+            new_quantity=new_quantity,
+            reason=stock_data.reason
+        )
+
+        db.add(movement)
+        db.commit()
+        db.refresh(product)
+
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Could not complete stock correction"
+        )
 
     return product
-
 
 
 

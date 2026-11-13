@@ -36,13 +36,17 @@ class ProductUpdate(BaseModel):
     image_url: str | None = None
 
 
+
 class StockRestock(BaseModel):
     quantity: int = Field(gt=0)
+    reason: str = Field(min_length=3, max_length=255)
+
 
 
 class StockCorrection(BaseModel):
     actual_quantity: int = Field(ge=0)
     reason: str = Field(min_length=3, max_length=255)
+
 
 
 class StockMovementResponse(BaseModel):
@@ -54,5 +58,4 @@ class StockMovementResponse(BaseModel):
     new_quantity: int
     reason: str | None
     created_at: datetime
-
     model_config = ConfigDict(from_attributes=True)

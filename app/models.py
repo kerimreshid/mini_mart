@@ -1,7 +1,18 @@
-from sqlalchemy import Column, Integer, String, Text, Numeric, DateTime, Boolean
 from sqlalchemy.sql import func
 
 from app.database import Base
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Text,
+    Numeric,
+    DateTime,
+    Boolean,
+    ForeignKey
+)
+from sqlalchemy.sql import func
+
 
 
 class Product(Base):
@@ -20,3 +31,32 @@ class Product(Base):
     )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     image_url = Column(String(500), nullable=True)
+
+
+class InventoryMovement(Base):
+     __tablename__ = "inventory_movements"
+
+     id = Column(Integer, primary_key=True, index=True)
+
+     product_id = Column(
+        Integer,
+        ForeignKey("products.id"),
+        nullable=False,
+        index=True
+    )
+
+     movement_type = Column(String(30), nullable=False)
+
+     quantity_change = Column(Integer, nullable=False)
+
+     previous_quantity = Column(Integer, nullable=False)
+
+     new_quantity = Column(Integer, nullable=False)
+
+     reason = Column(String(255), nullable=True)
+
+     created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
