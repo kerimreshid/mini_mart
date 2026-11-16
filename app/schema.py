@@ -59,3 +59,36 @@ class StockMovementResponse(BaseModel):
     reason: str | None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+
+class SaleItemCreate(BaseModel):
+    product_id: int = Field(gt=0)
+    quantity: int = Field(gt=0)
+
+
+class SaleCreate(BaseModel):
+    items: list[SaleItemCreate] = Field(
+        min_length=1,
+        max_length=50
+    )
+
+
+class SaleItemResponse(BaseModel):
+    id: int
+    product_id: int
+    quantity: int
+    unit_price: float
+    subtotal: float
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SaleResponse(BaseModel):
+    id: int
+    total_amount: float
+    created_at: datetime
+    items: list[SaleItemResponse]
+
+    model_config = ConfigDict(from_attributes=True)
+
+    
