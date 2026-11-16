@@ -2,7 +2,8 @@ from fastapi import FastAPI, Depends, HTTPException, status,Query
 from contextlib import asynccontextmanager
 from sqlalchemy.orm import Session
 from app import schema
-from app.schema import ProductCreate,ProductResponse,ProductUpdate,StockRestock,StockCorrection,StockMovementResponse
+from app.schema import ProductCreate,ProductResponse,ProductUpdate,StockRestock,StockCorrection,StockMovementResponse,SaleItemCreate,SaleResponse,SaleCreate,SaleItemResponse
+from decimal import Decimal
 
 from typing import Literal
 from fastapi import UploadFile, File
@@ -106,6 +107,25 @@ def get_products(
 
 # GET PRODUCT MOVEMENTS
 
+
+@app.get(
+    "/sales",
+    response_model=list[SaleResponse]
+)
+def get_sales(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=10, ge=1, le=100),
+    db: Session = Depends(get_db)
+):
+    sales = db.query(models.Sale).order_by(
+        models.Sale.created_at.desc(),
+        models.Sale.id.desc()
+    ).offset(skip).limit(limit).all()
+
+    return sales
+
+
+
 @app.get(
     "/products/{product_id}/movements",
     response_model=list[StockMovementResponse]
@@ -156,6 +176,27 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
 
 
 
+@app.get(
+    "/sales/{sale_id}",
+    response_model=SaleResponse
+)
+def get_sale(
+    sale_id: int,
+    db: Session = Depends(get_db)
+):
+    sale = db.query(models.Sale).filter(
+        models.Sale.id == sale_id
+    ).first()
+
+    if sale is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Sale not found"
+        )
+
+    return sale
+
+
 
 # CREATE PRODUCT
 @app.post(
@@ -174,6 +215,135 @@ def create_product(
     db.refresh(new_product)
 
     return new_product
+
+
+@app.post(
+    "/sales",
+    response_model=SaleResponse,
+    status_code=status.HTTP_201_CREATED
+)
+def create_sale(
+    sale_data: SaleCreate,
+    db: Session = Depends(get_db)
+):
+    # Reject repeated product IDs in one sale
+    product_ids = [
+        item.product_id for item in sale_data.items
+    ]
+
+    if len(product_ids) != len(set(product_ids)):
+        raise HTTPException(
+            status_code=422,
+            detail="A product can only appear once in a sale"
+        )
+
+    try:
+        # Step 1: Find and lock all requested products.
+        # Lock in sorted order to reduce deadlock risk.
+        products = {}
+
+        for product_id in sorted(product_ids):
+            product = db.query(models.Product).filter(
+                models.Product.id == product_id
+            ).with_for_update().first()
+
+            if product is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Product {product_id} not found"
+                )
+
+            if not product.is_active:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Product {product_id} is inactive"
+                )
+
+            products[product_id] = product
+
+        # Step 2: Check available stock before changing anything.
+        for item in sale_data.items:
+            product = products[item.product_id]
+
+            if product.stock_quantity < item.quantity:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Insufficient stock for {product.name}. "
+                        f"Available product amount : {product.stock_quantity}, "
+                        f"You Requested : {item.quantity}"
+                    )
+                )
+
+        # Step 3: Create the sale.
+        sale = models.Sale(total_amount=Decimal("0.00"))
+
+        db.add(sale)
+        db.flush()
+
+        total_amount = Decimal("0.00")
+
+        # Step 4: Process each product.
+        for item in sale_data.items:
+            product = products[item.product_id]
+
+            previous_quantity = product.stock_quantity
+
+            new_quantity = previous_quantity - item.quantity
+
+            unit_price = Decimal(str(product.price))
+
+            subtotal = unit_price * item.quantity
+
+            total_amount += subtotal
+
+            # Reduce product stock.
+            product.stock_quantity = new_quantity
+
+            # Create sale item.
+            sale_item = models.SaleItem(
+                sale_id=sale.id,
+                product_id=product.id,
+                quantity=item.quantity,
+                unit_price=unit_price,
+                subtotal=subtotal
+            )
+
+            db.add(sale_item)
+
+            # Record inventory movement.
+            movement = models.InventoryMovement(
+                product_id=product.id,
+                movement_type="sale",
+                quantity_change=-item.quantity,
+                previous_quantity=previous_quantity,
+                new_quantity=new_quantity,
+                reason=f"Sale #{sale.id}"
+            )
+
+            db.add(movement)
+
+        # Step 5: Save the final total.
+        sale.total_amount = total_amount
+
+        # Step 6: Commit all changes together.
+        db.commit()
+
+        db.refresh(sale)
+
+        return sale
+
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except Exception:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail="Could not complete the sale"
+        )
 
 
 
