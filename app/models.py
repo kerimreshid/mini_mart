@@ -85,6 +85,14 @@ class Sale(Base):
         back_populates="sale",
         cascade="all, delete-orphan"
     )
+    customer_id = Column(
+    Integer,
+    ForeignKey("customers.id"),
+    nullable=True,
+    index=True
+   )
+
+    customer = relationship("Customer", back_populates="sales")
 
 
 

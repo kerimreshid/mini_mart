@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -67,6 +68,8 @@ class SaleItemCreate(BaseModel):
 
 
 class SaleCreate(BaseModel):
+    customer_id: int | None = None
+
     items: list[SaleItemCreate] = Field(
         min_length=1,
         max_length=50
@@ -88,7 +91,37 @@ class SaleResponse(BaseModel):
     total_amount: float
     created_at: datetime
     items: list[SaleItemResponse]
+    customer_id: int | None
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+ 
+class CustomerCreate(BaseModel):
+    full_name: str = Field(min_length=2, max_length=60)
+    phone: Optional[str] = Field(default=None, max_length=30)
+    email: Optional[str] = Field(default=None, max_length=50)
+    
+
+class CustomerUpdate(BaseModel):
+    full_name: Optional[str] = Field(default=None, min_length=2, max_length=60)
+    phone: Optional[str] = Field(default=None, max_length=30)
+    email: Optional[str] = Field(default=None, max_length=50)
+
+
+
+class CustomerStatusUpdate(BaseModel):
+    is_active: bool
+
+
+
+class CustomerResponse(BaseModel):
+    id: int
+    full_name: str
+    phone: Optional[str]
+    email: Optional[str]
+    is_active: bool
+    created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
-    

@@ -1,10 +1,164 @@
+
+
+# @app.post(
+#     "/sales",
+#     response_model=SaleResponse,
+#     status_code=status.HTTP_201_CREATED
+# )
+# def create_sale(
+#     sale_data: SaleCreate,
+#     db: Session = Depends(get_db)
+# ):
+#     customer = None
+
+#     if sale_data.customer_id is not None:
+#         customer = db.query(models.Customer).filter(
+#             models.Customer.id == sale_data.customer_id
+#         ).first()
+
+#     if not customer:
+#         raise HTTPException(
+#             status_code=404,
+#             detail="Customer not found"
+#         )
+
+#     if not customer.is_active:
+#         raise HTTPException(
+#             status_code=409,
+#             detail="Customer is inactive"
+#         )
+#     # Reject repeated product IDs in one sale
+#     product_ids = [
+#         item.product_id for item in sale_data.items
+#     ]
+
+#     if len(product_ids) != len(set(product_ids)):
+#         raise HTTPException(
+#             status_code=422,
+#             detail="A product can only appear once in a sale"
+#         )
+
+#     try:
+#         # Step 1: Find and lock all requested products.
+#         # Lock in sorted order to reduce deadlock risk.
+#         products = {}
+
+#         for product_id in sorted(product_ids):
+#             product = db.query(models.Product).filter(
+#                 models.Product.id == product_id
+#             ).with_for_update().first()
+
+#             if product is None:
+#                 raise HTTPException(
+#                     status_code=404,
+#                     detail=f"Product {product_id} not found"
+#                 )
+
+#             if not product.is_active:
+#                 raise HTTPException(
+#                     status_code=409,
+#                     detail=f"Product {product_id} is inactive"
+#                 )
+
+#             products[product_id] = product
+
+#         # Step 2: Check available stock before changing anything.
+#         for item in sale_data.items:
+#             product = products[item.product_id]
+
+#             if product.stock_quantity < item.quantity:
+#                 raise HTTPException(
+#                     status_code=409,
+#                     detail=(
+#                         f"Insufficient stock for {product.name}. "
+#                         f"Available product amount : {product.stock_quantity}, "
+#                         f"You Requested : {item.quantity}"
+#                     )
+#                 )
+
+#         # Step 3: Create the sale.
+#         sale = models.Sale(total_amount=Decimal("0.00"))
+
+#         db.add(sale)
+#         db.flush()
+
+#         total_amount = Decimal("0.00")
+
+#         # Step 4: Process each product.
+#         for item in sale_data.items:
+#             product = products[item.product_id]
+
+#             previous_quantity = product.stock_quantity
+
+#             new_quantity = previous_quantity - item.quantity
+
+#             unit_price = Decimal(str(product.price))
+
+#             subtotal = unit_price * item.quantity
+
+#             total_amount += subtotal
+
+#             # Reduce product stock.
+#             product.stock_quantity = new_quantity
+
+#             # Create sale item.
+#             sale_item = models.SaleItem(
+#                 sale_id=sale.id,
+#                 product_id=product.id,
+#                 quantity=item.quantity,
+#                 unit_price=unit_price,
+#                 subtotal=subtotal
+#             )
+
+#             db.add(sale_item)
+
+#             # Record inventory movement.
+#             movement = models.InventoryMovement(
+#                 product_id=product.id,
+#                 movement_type="sale",
+#                 quantity_change=-item.quantity,
+#                 previous_quantity=previous_quantity,
+#                 new_quantity=new_quantity,
+#                 reason=f"Sale #{sale.id}"
+#             )
+
+#             db.add(movement)
+
+#         # Step 5: Save the final total.
+#         sale.total_amount = total_amount
+
+#         # Step 6: Commit all changes together.
+#         db.commit()
+
+#         db.refresh(sale)
+
+#         return sale
+
+#     except HTTPException:
+#         db.rollback()
+#         raise
+
+#     except Exception:
+#         db.rollback()
+
+#         raise HTTPException(
+#             status_code=500,
+#             detail="Could not complete the sale"
+#         )
+
+
+
+
+
+
 from fastapi import FastAPI, Depends, HTTPException, status,Query
 from contextlib import asynccontextmanager
 from sqlalchemy.orm import Session
 from app import schema
-from app.schema import ProductCreate,ProductResponse,ProductUpdate,StockRestock,StockCorrection,StockMovementResponse,SaleItemCreate,SaleResponse,SaleCreate,SaleItemResponse
-from decimal import Decimal
+from app.schema import ProductCreate,ProductResponse,ProductUpdate,StockRestock,StockCorrection,StockMovementResponse,SaleItemCreate,SaleResponse,SaleCreate,SaleItemResponse,CustomerResponse,CustomerUpdate,CustomerCreate,CustomerStatusUpdate
 
+from decimal import Decimal
+from app import models  
 from typing import Literal
 from fastapi import UploadFile, File
 from app.imagekit_client import imagekit
@@ -198,25 +352,6 @@ def get_sale(
 
 
 
-# CREATE PRODUCT
-@app.post(
-    "/products",
-    response_model=ProductResponse,
-    status_code=status.HTTP_201_CREATED
-)
-def create_product(
-    product: ProductCreate,
-    db: Session = Depends(get_db)
-):
-    new_product = models.Product(**product.model_dump())
-
-    db.add(new_product)
-    db.commit()
-    db.refresh(new_product)
-
-    return new_product
-
-
 @app.post(
     "/sales",
     response_model=SaleResponse,
@@ -226,19 +361,39 @@ def create_sale(
     sale_data: SaleCreate,
     db: Session = Depends(get_db)
 ):
-    # Reject repeated product IDs in one sale
-    product_ids = [
-        item.product_id for item in sale_data.items
-    ]
-
-    if len(product_ids) != len(set(product_ids)):
-        raise HTTPException(
-            status_code=422,
-            detail="A product can only appear once in a sale"
-        )
-
     try:
-        # Step 1: Find and lock all requested products.
+        # Step 0: Validate customer (if provided).
+        customer = None
+
+        if sale_data.customer_id is not None:
+            customer = db.query(models.Customer).filter(
+                models.Customer.id == sale_data.customer_id
+            ).first()
+
+            if not customer:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Customer not found"
+                )
+
+            if not customer.is_active:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Customer is inactive"
+                )
+
+        # Step 1: Reject repeated product IDs.
+        product_ids = [
+            item.product_id for item in sale_data.items
+        ]
+
+        if len(product_ids) != len(set(product_ids)):
+            raise HTTPException(
+                status_code=422,
+                detail="A product can only appear once in a sale"
+            )
+
+        # Step 2: Find and lock all requested products.
         # Lock in sorted order to reduce deadlock risk.
         products = {}
 
@@ -261,7 +416,7 @@ def create_sale(
 
             products[product_id] = product
 
-        # Step 2: Check available stock before changing anything.
+        # Step 3: Check available stock before changing anything.
         for item in sale_data.items:
             product = products[item.product_id]
 
@@ -270,29 +425,30 @@ def create_sale(
                     status_code=409,
                     detail=(
                         f"Insufficient stock for {product.name}. "
-                        f"Available product amount : {product.stock_quantity}, "
-                        f"You Requested : {item.quantity}"
+                        f"Available product amount: {product.stock_quantity}, "
+                        f"You requested: {item.quantity}"
                     )
                 )
 
-        # Step 3: Create the sale.
-        sale = models.Sale(total_amount=Decimal("0.00"))
+        # Step 4: Create the sale and connect the customer.
+        sale = models.Sale(
+            customer_id=customer.id if customer else None,
+            total_amount=Decimal("0.00")
+        )
 
         db.add(sale)
         db.flush()
 
         total_amount = Decimal("0.00")
 
-        # Step 4: Process each product.
+        # Step 5: Process each product.
         for item in sale_data.items:
             product = products[item.product_id]
 
             previous_quantity = product.stock_quantity
-
             new_quantity = previous_quantity - item.quantity
 
             unit_price = Decimal(str(product.price))
-
             subtotal = unit_price * item.quantity
 
             total_amount += subtotal
@@ -323,10 +479,10 @@ def create_sale(
 
             db.add(movement)
 
-        # Step 5: Save the final total.
+        # Step 6: Save the final total.
         sale.total_amount = total_amount
 
-        # Step 6: Commit all changes together.
+        # Step 7: Commit all changes together.
         db.commit()
 
         db.refresh(sale)
@@ -345,6 +501,109 @@ def create_sale(
             detail="Could not complete the sale"
         )
 
+# CREATE PRODUCT
+@app.post(
+    "/products",
+    response_model=ProductResponse,
+    status_code=status.HTTP_201_CREATED
+)
+def create_product(
+    product: ProductCreate,
+    db: Session = Depends(get_db)
+):
+    new_product = models.Product(**product.model_dump())
+
+    db.add(new_product)
+    db.commit()
+    db.refresh(new_product)
+
+    return new_product
+
+
+
+
+@app.post("/customers", response_model=CustomerResponse, status_code=201)
+def create_customer(
+    customer_data: CustomerCreate,
+    db: Session = Depends(get_db)
+):
+    customer = models.Customer(**customer_data.model_dump())
+
+    db.add(customer)
+    db.commit()
+    db.refresh(customer)
+
+    return customer
+
+
+
+@app.post(
+    "/customers/bulk",
+    response_model=list[CustomerResponse],
+    status_code=201
+)
+def create_customers_bulk(
+    customers_data: list[CustomerCreate],
+    db: Session = Depends(get_db)
+):
+    # Step 1: Check the number of customers
+    if not customers_data or len(customers_data) > 50:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide between 1 and 50 customers"
+        )
+
+    # Step 2: Convert Pydantic schemas into SQLAlchemy objects
+    customers = [
+        models.Customer(**customer.model_dump())
+        for customer in customers_data
+    ]
+
+    # Step 3: Insert all customers
+    try:
+        db.add_all(customers)
+        db.commit()
+
+        # Step 4: Refresh records to retrieve database-generated values
+        for customer in customers:
+            db.refresh(customer)
+
+    except Exception:
+        db.rollback()
+        raise
+
+    # Step 5: Return all created customers
+    return customers
+
+
+@app.get("/customers", response_model=list[CustomerResponse])
+def get_customers(
+    search: str | None = None,
+    skip: int = 0,
+    limit: int = 20,
+    db: Session = Depends(get_db)
+):
+    query = db.query(models.Customer).filter(models.Customer.is_active == True)
+
+    if search:
+        query = query.filter(
+            models.Customer.full_name.ilike(f"%{search}%")
+        )
+
+    return query.order_by(models.Customer.id.desc()).offset(skip).limit(limit).all()
+
+
+
+@app.get("/customers/{customer_id}", response_model=CustomerResponse)
+def get_customer(customer_id: int, db: Session = Depends(get_db)):
+    customer = db.query(models.Customer).filter(
+        models.Customer.id == customer_id
+    ).first()
+
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    return customer
 
 
 
@@ -548,6 +807,58 @@ def update_product(
 
 
 
+@app.patch("/customers/{customer_id}", response_model=CustomerResponse)
+def update_customer(
+    customer_id: int,
+    customer_data: CustomerUpdate,
+    db: Session = Depends(get_db)
+):
+    customer = db.query(models.Customer).filter(
+        models.Customer.id == customer_id
+    ).first()
+
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    updates = customer_data.model_dump(exclude_unset=True)
+
+    for key, value in updates.items():
+        setattr(customer, key, value)
+
+    db.commit()
+    db.refresh(customer)
+
+    return customer
+
+
+@app.patch("/customers/{customer_id}/status")
+def update_customer_status(
+    customer_id: int,
+    status_data: CustomerStatusUpdate,
+    db: Session = Depends(get_db)
+):
+    customer = db.query(models.Customer).filter(
+        models.Customer.id == customer_id
+    ).first()
+
+    if not customer:
+        raise HTTPException(
+            status_code=404,
+            detail="Customer not found"
+        )
+
+    customer.is_active = status_data.is_active
+
+    db.commit()
+    db.refresh(customer)
+
+    return {
+        "message": "Customer status updated successfully",
+        "customer_id": customer.id,
+        "is_active": customer.is_active
+    }
+
+
 @app.patch("/products/{product_id}", response_model=ProductResponse)
 def patch_product(
     product_id: int,
@@ -657,3 +968,78 @@ def delete_product(
         "message": "Product deleted successfully"
     }
 
+
+
+@app.delete("/customers/{customer_id}")
+def delete_customer(
+    customer_id: int,
+    db: Session = Depends(get_db)
+):
+    # Find customer
+    customer = db.query(models.Customer).filter(
+        models.Customer.id == customer_id
+    ).first()
+
+    if not customer:
+        raise HTTPException(
+            status_code=404,
+            detail="Customer not found"
+        )
+
+    # Check whether customer has historical sales
+    sale = db.query(models.Sale).filter(
+        models.Sale.customer_id == customer_id
+    ).first()
+
+    if sale:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot permanently delete a customer with sales history. Deactivate instead."
+        )
+
+    db.delete(customer)
+    db.commit()
+
+    return {
+        "message": "Customer deleted successfully",
+        "customer_id": customer_id
+    }
+
+
+
+@app.delete("/customers")
+def delete_all_customers(
+    db: Session = Depends(get_db)
+):
+    # Check whether any customer is linked to a sale
+    sale = db.query(models.Sale).filter(
+        models.Sale.customer_id.isnot(None)
+    ).first()
+
+    if sale:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete all customers because sales history exists. Deactivate customers instead."
+        )
+
+    # Get all customers
+    customers = db.query(models.Customer).all()
+
+    if not customers:
+        return {
+            "message": "No customers found",
+            "deleted_count": 0
+        }
+
+    deleted_count = len(customers)
+
+    # Delete customers
+    for customer in customers:
+        db.delete(customer)
+
+    db.commit()
+
+    return {
+        "message": "All customers deleted successfully",
+        "deleted_count": deleted_count
+    }
